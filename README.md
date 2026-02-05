@@ -1,5 +1,5 @@
 1. Seguridad y Anti-Bloqueo (Blindaje)
-🛡️ Barrera de Arranque (Nueva V15): Al encenderse, el bot espera 15 segundos y marca la hora exacta. Ignora automáticamente cualquier mensaje anterior a ese segundo (spam viejo, sincronización o mensajes acumulados mientras estaba apagado).
+🛡️ Barrera de Arranque (Nueva V15): Al encenderse, el bot espera 5 minutos y marca la hora exacta. Ignora automáticamente cualquier mensaje anterior a ese segundo (spam viejo, sincronización o mensajes acumulados mientras estaba apagado).
 
 💾 Memoria Permanente (Base de Datos): Usa una base de datos local (SQLite) para recordar a quién ya le respondió. Si reinicias el bot, no volverá a responder mensajes duplicados.
 
@@ -54,4 +54,4 @@ A tu Privado: Te avisa con texto: "🔔 Pago Movil Recibido" o "🔔 USDT Recibi
 6. Humanización
 🎭 Comportamiento Humano: "Escribe" (typing...) durante unos segundos antes de responder.
 
-👂 Buffer de Escucha: Espera 4 segundos para agrupar mensajes seguidos del cliente y responder una sola vez con todo el contexto.
+👂 Buffer de Escucha: Espera 7 segundos para agrupar mensajes seguidos del cliente y responder una sola vez con todo el contexto.
