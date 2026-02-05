@@ -1,57 +1,95 @@
-1. Seguridad y Anti-Bloqueo (Blindaje)
-🛡️ Barrera de Arranque (Nueva V15): Al encenderse, el bot espera 5 minutos y marca la hora exacta. Ignora automáticamente cualquier mensaje anterior a ese segundo (spam viejo, sincronización o mensajes acumulados mientras estaba apagado).
+1. 🛡️ Seguridad y Estabilidad (Blindaje del Servidor)
+Protocolo de "Paranoia" (Arranque Seguro): Al encenderse, el bot entra en cuarentena por 5 minutos. Se conecta, pero ignora absolutamente todo mensaje anterior al momento exacto en que terminan los 5 minutos. Esto elimina el riesgo de responder spam viejo o sincronizaciones masivas.
 
-💾 Memoria Permanente (Base de Datos): Usa una base de datos local (SQLite) para recordar a quién ya le respondió. Si reinicias el bot, no volverá a responder mensajes duplicados.
+Memoria Anti-Alzheimer (SQLite): Base de datos local que registra cada mensaje procesado. Si el VPS se reinicia, el bot recuerda a quién ya le respondió para no repetir.
 
-🚫 Anti-Llamadas y Anti-Audios: Rechaza llamadas automáticamente y avisa educadamente que no escucha notas de voz.
+Anti-Llamadas: Rechaza llamadas automáticamente.
 
-⏰ Horario Estricto: Solo trabaja de 7:00 AM a 10:00 PM (Hora Venezuela). Fuera de ese horario, ignora todo.
+Anti-Notas de Voz: Responde educadamente que no escucha audios.
 
-2. Inteligencia Comercial y Visión
-👁️ Visión de Precios (Ojos): Si el cliente envía una foto con un precio visible (ej: "$100"), la IA lo lee.
+Horario de Oficina: Trabaja estrictamente de 8:00 AM a 10:00 PM (Hora Venezuela). Fuera de eso, ignora mensajes.
 
-🧠 Filtro de Nicho: Sabe que vende electrodomésticos. Si piden "cauchos", "repuestos" o "soporte técnico", los rechaza amablemente y los manda a la tienda física.
+2. 🧠 Inteligencia Comercial y Nicho
+Inventario Ampliado (V18): El bot sabe que vende Electrodomésticos, Hogar, Antenas Starlink, Juguetes y Perfumes.
 
-🗣️ Saludos Dinámicos: Dice "Buenos días", "Buenas tardes" o "Buenas noches" según la hora real.
+Filtro de Nicho: Si piden "cauchos", "repuestos de auto" o "soporte técnico", rechaza la venta y manda a tienda física.
 
-3. Sistema Financiero Automatizado
-💵 Tasa BCV en Vivo: Se conecta a internet cada hora para actualizar el precio del dólar oficial en Venezuela.
+Lectura de Catálogo WhatsApp: Si el cliente envía un producto del carrito de WhatsApp, el bot lee el Título del producto (donde pusiste el precio) para saber cuánto cuesta, en lugar de decir "no veo precio".
 
-🧮 Calculadora Inteligente:
+Visión Artificial (GPT-4o): Si envían foto, detecta el precio escrito en la imagen.
 
-Si piden precio en Bolívares: Multiplica el precio de la foto por la Tasa BCV.
+Defensa Anti-Insultos (V18): Si el cliente usa groserías o amenazas, el bot responde con un mensaje de despido ("sus datos pasarán a una base de datos") y bloquea la lógica de venta con ese usuario.
 
-Si piden precio en USDT/Binance: Calcula automáticamente el 50% de descuento sobre el precio en dólares.
+3. 💰 Sistema Financiero y Reglas de Moneda (Estricto)
+Tasa BCV en Vivo: Consulta la API cada 1 hora.
 
-4. Flujo de Ventas y Pagos (El "Cierre")
-🚦 Paso a Paso Estricto: No pide requisitos (cédula/video) hasta que el cliente define cómo va a pagar.
+Calculadora Automática:
 
-🪙 Ruta Cripto (USDT/Binance):
+Si piden Bs: Multiplica Precio($) x Tasa BCV.
 
-No pide video (agiliza la venta).
+Si piden USDT: Aplica 50% de Descuento sobre el precio en $.
 
-Envía la plantilla de texto con la dirección de la Wallet + Imagen del QR automáticamente.
+Segregación de Pagos (V18):
 
-🏦 Ruta Bolívares (Pago Móvil/Transferencia):
+Tienda Física: El bot aclara que en tienda SOLO se acepta Dólares Efectivo.
 
-Exige los 3 requisitos: Cédula + GPS + Video de confirmación.
+Online (Bot): Aclara que por WhatsApp SOLO se acepta Pago Móvil, Transferencia o USDT. (No acepta efectivo para envíos).
 
-Ultimátum: Una vez recibidos los requisitos, da un aviso de "10 minutos para pagar" antes de enviar los datos bancarios.
+4. 🚦 Flujo de Ventas (Paso a Paso)
+1. Detección:
 
-Imagen Dinámica: Envía la foto del Pago Móvil o Transferencia (según lo que elija el cliente) desde la memoria del servidor.
+Si envían Foto/Orden: Confirma disponibilidad y garantía. NO pide pago de una vez (menos agresivo).
 
-⏳ Seguimiento: Si pasan 10 minutos después de dar los datos y el cliente no paga, pregunta: "¿Todo bien con el pago?".
+Si piden precio sin foto: OBLIGA a enviar el catálogo. No da precios inventados.
 
-5. Integración con Telegram (Gestión Remota)
-📸 Gestor de Imágenes: Tú (Administrador) puedes subir las fotos del Pago Móvil, Transferencia o QR al chat de Telegram y el bot las actualiza en el servidor al instante (sin tocar código).
+Anti-Repetición de Catálogo: Si ya envió el link hace poco, no lo vuelve a enviar.
 
-🔔 Notificaciones de Cobro:
+2. Intención: Solo cuando el cliente dice "Quiero comprar", pregunta el método de pago.
 
-Al Grupo: Envía la FOTO del comprobante con el texto "Credito" al pie.
+3. Requisitos (Loop Inteligente):
 
-A tu Privado: Te avisa con texto: "🔔 Pago Movil Recibido" o "🔔 USDT Recibido".
+Si ya se pidieron los requisitos antes, NO vuelve a enviar la lista larga. Pregunta: "¿Desea concretar su compra?".
 
-6. Humanización
-🎭 Comportamiento Humano: "Escribe" (typing...) durante unos segundos antes de responder.
+Texto Legal: Agrega la frase sobre "Registro en sistema de facturación y transporte".
 
-👂 Buffer de Escucha: Espera 7 segundos para agrupar mensajes seguidos del cliente y responder una sola vez con todo el contexto.
+4. Envío: Tiene precargada tu política de envíos (Gratis, Zoom, MRW, Domesa, solo compras online).
+
+5. 💳 Pasarela de Pagos Híbrida
+Ruta USDT (Rápida):
+
+Descuento 50% aplicado.
+
+NO pide video.
+
+Envía Texto con Wallet + Imagen QR automáticamente.
+
+Ruta Bolívares (Segura):
+
+Exige: Cédula + Dirección (Estado/Municipio/Calle) + Video.
+
+Detector de Video: El código reconoce técnicamente si el archivo es un video (.mp4, etc.) para no decir "falta video" si ya lo enviaron.
+
+Validación de Dirección: Si la dirección es muy corta, pide detalles.
+
+Ultimátum de Cierre: Al entregar los datos bancarios, advierte que la orden dura 10 minutos.
+
+Seguimiento: A los 10 minutos, pregunta: "¿Todo bien con el pago?".
+
+6. 📸 Gestión Multimedia (Telegram V2)
+Subida Remota: Tú subes las fotos al chat de Telegram con los textos pm, transf o usdt.
+
+Descarga Blindada (Fix V18): Usa un sistema de descarga por flujo (stream) para evitar que las imágenes lleguen vacías o corruptas al servidor.
+
+Envío Local: El bot de WhatsApp toma esas imágenes del servidor y se las manda al cliente.
+
+7. 🔔 Notificaciones y Reportes
+Al Grupo de Telegram: Envía la FOTO del comprobante del cliente con el texto "Credito".
+
+Al Admin (Privado): Notifica con texto: "🔔 Pago Movil Recibido" o "🔔 USDT Recibido".
+
+8. 🎭 Humanización
+Buffer de 7 Segundos: Espera a que el cliente termine de escribir (acumula mensajes) antes de responder.
+
+Typing: Aparece "escribiendo..." durante 3 segundos.
+
+Emojis: Se le ha instruido usar más emojis en la conversación para ser más amigable (salvo cuando se defiende de insultos).
