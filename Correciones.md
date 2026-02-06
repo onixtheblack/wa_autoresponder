@@ -101,3 +101,15 @@ Doble Cerebro Sincronizado:
 index.js: Cuerpo, seguridad, base de datos y "Policía de Requisitos".
 cerebro.js: Mente, contexto, memoria y lógica de ventas.
 
+
+V27:
+
+Aumento de Contexto (80 Mensajes):
+He modificado la consulta SQL en index.js para arrastrar los últimos 80 mensajes. Esto le da una "memoria de largo plazo" muy superior para no olvidar precios o detalles mencionados hace mucho.
+Corrección de Logística (Envíos):
+Actualizada la Base de Conocimiento en cerebro.js con el texto exacto: "Envíos Gratis (Zoom, MRW, Domesa, Domicilio) y envíos entre sucursales".
+Corrección del Flujo de Pedido:
+He ajustado el Prompt para que, al confirmar la compra, NO pida la dirección sola.
+El flujo forzado será: Cliente confirma -> Bot pide Método de Pago -> Bot lista los 3 Requisitos (Cédula, Dirección, Video) en bloque.
+
+
