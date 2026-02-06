@@ -206,5 +206,10 @@ Humanización 🎭 Comportamiento Humano: "Escribe" (typing...) durante unos seg
 
 
 
+25-  Hola, volvi por que hay un error, no pude probarlo mucho por que vi un detalle; El cliente escribio, el bot respondio un Buenos dias correctamente; El cliente Dijo que queria comprar; El bot le respondio bien diciendo que puede legir entre los distintos metodos de pago e hiso distincion del pago en efectivo y en tienda, el bot pidio foto del articulo para confirmar disponibilidad; Pero el Error fue que el Bot le dijo al cliente que valla a revisar el catalogo que le envio previamente, y El bot en esa conversacion No envio ningun catalogo previamente lo cual genera confusion; El segundo error es que el Cliente reenvio una imagen de un articulo y el cliente le pregunto cual es el precio pero el bot no reconocio la imagen y le pidio al cliente que envie la imagen de un articulo, Nose si sera por que fue reenviada la imagen. Hasta ahora solo he detectado esos problemas. Corrigelos.
+
+
+
+
 
 25-	Tienes un error en la interpretacion de lo que te dije; y en vez de avanzar estas atrasandote; Reacción a la Dirección: Si el cliente manda la dirección antes de tiempo, el bot la guardará y dirá "Gracias, para completar el pedido necesito X y Y". Sobre eso no me referia a cuendo el cliente va ha comprar; me refiero que aveces los clientes dan una direccion como quiendo decir que si en ese lugar hay, o solo envian una direccion para joder; en ese caso el bot solo debe decirle al cliente el parametro que yo te di sobre las ventas online, que si se le puede hacer el envio a esa direccion comprando online.
