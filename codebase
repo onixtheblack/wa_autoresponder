@@ -2,66 +2,56 @@ require('dotenv').config();
 const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const OpenAI = require('openai');
-const mime = require('mime-types');
 const Database = require('better-sqlite3');
 const axios = require('axios');
-const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 
-// --- 1. CONFIGURACIÓN Y RUTAS ---
-const ASSETS_PATH = path.join(__dirname, 'src', 'assets'); // Ruta absoluta corregida
+// ==============================================================================
+// 1. CONFIGURACIÓN Y SISTEMA DE ARCHIVOS
+// ==============================================================================
+const CLAVE_ADMIN = "admin123"; // CLAVE PARA SUBIR FOTOS
+const ASSETS_PATH = path.join(__dirname, 'src', 'assets');
 if (!fs.existsSync(ASSETS_PATH)) fs.mkdirSync(ASSETS_PATH, { recursive: true });
 
-// Base de Datos
+// Base de Datos (Memoria Permanente)
 const db = new Database('memoria.db');
-db.exec(`CREATE TABLE IF NOT EXISTS processed_messages (id TEXT PRIMARY KEY, timestamp INTEGER)`);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS processed_messages (id TEXT PRIMARY KEY, timestamp INTEGER);
+  CREATE TABLE IF NOT EXISTS blocked_users (phone TEXT PRIMARY KEY);
+`);
 const insertMessage = db.prepare('INSERT OR IGNORE INTO processed_messages (id, timestamp) VALUES (?, ?)');
 const checkMessage = db.prepare('SELECT id FROM processed_messages WHERE id = ?');
+const blockUser = db.prepare('INSERT OR IGNORE INTO blocked_users (phone) VALUES (?)');
+const checkBlocked = db.prepare('SELECT phone FROM blocked_users WHERE phone = ?');
 
-// --- 2. CLIENTES ---
+// ==============================================================================
+// 2. CLIENTES Y CONEXIONES
+// ==============================================================================
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const client = new Client({ authStrategy: new LocalAuth(), puppeteer: { args: ['--no-sandbox'] } });
-const tBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-// IDs Telegram
+// Telegram (Notificaciones)
+const TelegramBot = require('node-telegram-bot-api');
+const tBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false });
 const ADMIN_ID = parseInt(process.env.TELEGRAM_ADMIN_ID);
 const GROUP_ID = process.env.TELEGRAM_GROUP_ID;
 
-// VARIABLES
-const chatHistory = new Map();
+// VARIABLES DE ESTADO Y SEGURIDAD
 const messageBuffers = new Map();
 const clientState = new Map(); 
+// Estructura State: { paso: 'INICIO'|'REQUISITOS'|'CONFIRMACION'|'PAGO', metodo: null, datos: Set(), saludo_enviado: false }
 
-// SEGURIDAD
 let isReady = false; 
 let botReadyTime = 0; 
 let tasaBCV = 60.00;
 
-// --- 3. TELEGRAM: GESTOR DE IMÁGENES ---
-tBot.on('photo', async (msg) => {
-    if (msg.from.id !== ADMIN_ID) return;
-    const caption = (msg.caption || "").toLowerCase().trim();
-    let filename = "";
+// Lista Negra de Palabras (Anti-Insultos)
+const INSULTOS = ["estafa", "ladrón", "ladron", "rata", "maldito", "maldita", "basura", "mierda", "csm", "mamaguevo", "estafadores", "robo"];
 
-    if (caption.includes("pm") || caption.includes("pago movil")) filename = "pago_movil.jpg";
-    else if (caption.includes("transf")) filename = "transferencia.jpg";
-    else if (caption.includes("usdt")) filename = "usdtqr.jpg";
-    else return tBot.sendMessage(ADMIN_ID, "⚠️ Usa 'pm', 'transf' o 'usdt'.");
-
-    const fileLink = await tBot.getFileLink(msg.photo[msg.photo.length - 1].file_id);
-    const file = fs.createWriteStream(path.join(ASSETS_PATH, filename));
-    https.get(fileLink, response => {
-        response.pipe(file);
-        file.on('finish', () => {
-            file.close();
-            tBot.sendMessage(ADMIN_ID, `✅ Imagen ${filename} guardada en: ${ASSETS_PATH}`);
-        });
-    });
-});
-
-// --- 4. FINANZAS ---
+// ==============================================================================
+// 3. MÓDULO FINANCIERO
+// ==============================================================================
 async function actualizarTasaBCV() {
     try {
         const res = await axios.get('https://ve.dolarapi.com/v1/dolares/oficial');
@@ -69,259 +59,349 @@ async function actualizarTasaBCV() {
             tasaBCV = parseFloat(res.data.promedio).toFixed(2);
             console.log(`💵 Tasa BCV: ${tasaBCV}`);
         }
-    } catch (e) { console.error("Error Tasa BCV"); }
+    } catch (e) { console.error("Error Tasa BCV (Usando respaldo)"); }
 }
 actualizarTasaBCV();
-setInterval(actualizarTasaBCV, 3600000);
+setInterval(actualizarTasaBCV, 3600000); // Cada hora
 
-// --- 5. HERRAMIENTAS ---
+// ==============================================================================
+// 4. HERRAMIENTAS AUXILIARES
+// ==============================================================================
 const sleep = (min, max) => new Promise(r => setTimeout(r, Math.floor(Math.random() * (max - min + 1) + min)));
 
-async function notificarPagoTelegram(tipo, buffer, captionText = "Credito") {
+async function notificarPagoTelegram(tipo, buffer, captionText) {
     try {
         if (buffer) await tBot.sendPhoto(GROUP_ID, buffer, { caption: captionText });
-        else await tBot.sendMessage(GROUP_ID, `💰 ${captionText} (Sin foto)`);
+        else await tBot.sendMessage(GROUP_ID, `💰 ${captionText}`);
         await tBot.sendMessage(ADMIN_ID, `🔔 ${tipo} Recibido.`);
     } catch (e) { console.error("Telegram Error:", e.message); }
 }
 
 async function enviarImagenLocal(telefono, nombreArchivo) {
     const filePath = path.join(ASSETS_PATH, nombreArchivo);
-    console.log(`📤 Intentando enviar imagen: ${filePath}`);
-    
     if (fs.existsSync(filePath)) {
-        try {
-            const media = MessageMedia.fromFilePath(filePath);
-            await client.sendMessage(telefono, media);
-            console.log("✅ Imagen enviada.");
-        } catch (e) { console.error("Error enviando archivo media:", e); }
+        const media = MessageMedia.fromFilePath(filePath);
+        await client.sendMessage(telefono, media);
     } else {
-        console.log(`❌ ERROR: No existe la imagen ${nombreArchivo}. Súbela por Telegram.`);
-        await client.sendMessage(telefono, "[Error técnico: Imagen de pago no cargada en sistema. Por favor espere un momento]");
+        await client.sendMessage(telefono, "⚠️ (Imagen cargando en servidor, por favor guíese por el texto).");
     }
 }
 
-// --- 6. CEREBRO IA (GREILUZ V17 - CORREGIDA) ---
-async function consultarIA(telefono, texto, imgBase64, mimeType, tieneVideo, esOrden) {
+// ==============================================================================
+// 5. CEREBRO IA (LOGICA V22 - CONTROL TOTAL)
+// ==============================================================================
+async function consultarIA(telefono, texto, imgBase64, mimeType, tieneVideo, esOrden, estado) {
     const now = new Date();
-    const fecha = now.toLocaleDateString('es-VE');
-    const hora = now.toLocaleTimeString('es-VE', {hour:'numeric', minute:'numeric', hour12:true});
     const horaVE = parseInt(now.toLocaleTimeString('es-VE', {timeZone:'America/Caracas', hour:'2-digit', hour12:false}));
+    let saludo = horaVE < 12 ? "Buenos días ☀️" : (horaVE < 18 ? "Buenas tardes 🌤️" : "Buenas noches 🌙");
     
-    let saludo = horaVE < 12 ? "Buenos días" : (horaVE < 18 ? "Buenas tardes" : "Buenas noches");
+    // Si ya saludamos en esta sesión, borramos el saludo para no ser repetitivos
+    if (estado.saludo_enviado) saludo = "";
+
+    // --- CONSTRUCCIÓN DINÁMICA DEL PROMPT SEGÚN EL ESTADO ---
+    let instrucciones = "";
+
+    if (estado.paso === 'INICIO') {
+        instrucciones = `
+        [FASE: ATENCIÓN AL CLIENTE / VENTAS]
+        OBJETIVO: Responder dudas, dar precios o iniciar venta.
+        INVENTARIO: Electrodomésticos, Hogar, Starlink, Juguetes, Perfumes. (NO cauchos/repuestos).
+        
+        REGLAS ESTRICTAS:
+        1. SI ENVÍA FOTO/ORDEN: "Excelente elección. Sí tenemos disponible ✅ con garantía." (Espera intención de compra).
+        2. SI DICE "PRECIO" (sin foto): Pide que revise el catálogo enviado arriba.
+        3. SI ENVÍA DIRECCIÓN AHORA: "Sí cubrimos esa zona ✅. Envíos Gratis por Zoom/MRW. ¿Desea realizar un pedido?". (NO guardes la dirección aún).
+        4. SI QUIERE PAGAR EN EFECTIVO: "Para pagos en efectivo 💵 le esperamos en nuestras tiendas físicas. Por este medio digital solo procesamos pagos en Bolívares o USDT con envío." -> TAG: [CLOSE_CASH].
+        5. SI DICE "QUIERO COMPRAR": Pregunta "¿Cuál es su método de pago? (Bs Pago Móvil/Transf o Binance USDT)".
+        
+        TAGS DE SELECCIÓN: [SET_PM], [SET_TRANSF], [SET_USDT].
+        `;
+    } 
+    else if (estado.paso === 'REQUISITOS') {
+        instrucciones = `
+        [FASE: RECOLECCIÓN DE DATOS - MÉTODO: ${estado.metodo.toUpperCase()}]
+        YA TENEMOS: ${JSON.stringify(Array.from(estado.datos))}.
+        
+        LO QUE NECESITAMOS OBLIGATORIAMENTE:
+        - Si es USDT: Cédula + Dirección.
+        - Si es PM/Transf: Cédula + Dirección + VIDEO.
+        
+        ACCIONES:
+        1. Si el usuario envía un dato nuevo, confirma: "Recibido. Solo falta [lo que falte]".
+        2. Si el usuario pregunta "¿Qué video?": Explica "Un video corto de 5 seg diciendo: Confirmo identidad para Multimax en fecha de hoy".
+        3. Si YA TIENE TODO (según la lista "YA TENEMOS"): Responde ÚNICAMENTE EL TAG: [TRIGGER_CHECK_COMPLETE].
+        `;
+    } 
+    else if (estado.paso === 'CONFIRMACION') {
+        instrucciones = `
+        [FASE: ULTIMÁTUM]
+        Tu ÚNICA respuesta posible es:
+        "Para la compra, dispondrá de 10 minutos para completar el trámite o el sistema cerrará la orden automáticamente, por favor CONFIRME las condiciones de compra y que realmente posee la disponibilidad del pago para proceder. ⏳"
+        
+        Si el usuario responde afirmativo (Sí/Ok/Confirmo), responde TAG: [TRIGGER_PAYMENT_SEND].
+        `;
+    }
 
     const systemPrompt = `
-    Eres Greiluz Martinez, Asesora Multimax Store.
-    Fecha: ${fecha}. Hora: ${hora}. Tasa BCV: ${tasaBCV} Bs.
+    Eres un asistente humano de ventas. NO digas "soy una IA".
+    ${saludo ? `Saludo inicial: "${saludo}".` : "NO saludes de nuevo, ve al grano."}
+    Tasa BCV: ${tasaBCV}.
+    Cálculos: Foto($) -> Bs (x${tasaBCV}) | USDT (50% descuento).
     
-    HORARIO: 8:00 AM a 10:00 PM.
-    ENVÍOS: "Los envios son totalmente Gratis a nivel nacional, enviamos via Zoom, MRW, Domesa y Domicilio, también realizamos envios hacia nuestras otras sucursales. Envios Unicamente para compras online."
-    NICHO: Solo Electrodomésticos/Hogar. NO cauchos/repuestos.
-
-    💰 PRECIOS:
-    - Si ves precio en foto ($) y piden Bs: Multiplica por ${tasaBCV}.
-    - Si piden USDT: Precio es 50% del valor en $.
-
-    🛑 FLUJO DE VENTA ESTRICTO:
-
-    1. DETECCIÓN Y DISPONIBILIDAD:
-       - Si usuario envía FOTO/ORDEN: Responde SOLO disponibilidad y garantía. NO preguntes pago aún. 
-         Ej: "Sí tenemos disponible ✅. Cuenta con garantía oficial de marca."
-       - Si usuario pide PRECIO/CATÁLOGO SIN FOTO: ¡OBLIGATORIO! Envía los links de catálogo. NO pidas foto.
-         (Links: Telegram https://t.me/Tiendaonline_oficial_bot | WhatsApp https://wa.me/c/447848106109)
-       - Si usuario pregunta RARO (Cauchos): "No manejamos ese rubro. Diríjase a tienda física."
-
-    2. INTENCIÓN DE COMPRA (El cliente dice "Quiero comprar", "Precio en Bs", "Cómo pago"):
-       - Responde duda de precio (si la hay).
-       - AHORA SÍ Pregunta: "¿Cuál es su método de pago? (Recibimos $ Efectivo, Bs Pago Móvil/Transf, Binance USDT)".
-
-    3. REQUISITOS (Según método):
-       >>> USDT (50% OFF): Responde TAG [SEND_USDT_INFO]. NO pidas video.
-       
-       >>> PAGO MÓVIL / TRANSFERENCIA:
-           - Pide: 1. Foto Cédula, 2. Dirección de Envío (Estado/Municipio/Calle), 3. Video corto ("Confirmo identidad para Multimax en ${fecha}").
-           - IMPORTANTE: Agrega este texto al final: "Estos son requisitos necesarios para el registro en el sistema de facturación y transporte."
-           - NO envíes datos de pago aún.
-
-       >>> EFECTIVO: Pide Estado -> Da Dirección Tienda.
-
-    4. RECEPCIÓN DE REQUISITOS (VALIDACIÓN):
-       - Si el sistema te dice "El usuario envió VIDEO": Confirma que recibiste el video.
-       - Si la dirección es confusa (solo calle): Pide Estado y Municipio.
-       - Si faltan requisitos: Pide SOLO lo que falta.
-       - Si enviaron TODO (Cédula + Dirección + Video): Responde TAG [SEND_PM_INFO] o [SEND_TRANSF_INFO].
-       - Texto OBLIGATORIO al dar datos: "Información recibida, en breve se le enviará la información del Pago de la Gerencia Encargada de Finanzas."
-
-    5. VERIFICACIÓN PAGO:
-       - Solo pide comprobante DESPUÉS de haber enviado los datos bancarios.
-       - Si envían COMPROBANTE: "Información recibida, ya se procederá con la correcta verificación, por favor espere." (TAG: [RECEIPT_RECEIVED])
+    ${instrucciones}
     `;
 
-    if (!chatHistory.has(telefono)) chatHistory.set(telefono, [{ role: "system", content: systemPrompt }]);
-    const historial = chatHistory.get(telefono);
-
-    // INYECCIÓN DE CONTEXTO TÉCNICO (Video/Orden)
-    let extraInfo = "";
-    if (esOrden) extraInfo += "[SISTEMA: El usuario envió una ORDEN DEL CATÁLOGO]. ";
-    if (tieneVideo) extraInfo += "[SISTEMA: El usuario ha enviado un archivo de VIDEO CORRECTAMENTE]. ";
+    let historial = [{ role: "system", content: systemPrompt }];
     
-    let content = extraInfo + texto;
-    let msgUser = imgBase64 ? [{type: "text", text: content}, {type: "image_url", image_url: {url: `data:${mimeType};base64,${imgBase64}`}}] : content;
+    // Inyección de contexto
+    let userInput = texto;
+    if (esOrden) userInput = `[ORDEN CATÁLOGO WA]. Mensaje: ${texto}`;
+    if (tieneVideo) userInput += " [ARCHIVO DE VIDEO DETECTADO] ";
+    
+    let msgUser = imgBase64 ? 
+        [{type: "text", text: userInput}, {type: "image_url", image_url: {url: `data:${mimeType};base64,${imgBase64}`}}] : 
+        userInput;
 
     historial.push({ role: "user", content: msgUser });
-    if (historial.length > 25) historial.splice(1, historial.length - 25);
 
     try {
         const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: historial,
-            max_tokens: 450,
-            temperature: 0.1 // Bajamos temp para que sea más obediente
+            max_tokens: 350,
+            temperature: 0.1
         });
-        let r = completion.choices[0].message.content;
-        
-        if (!r.includes('{"accion":')) {
-            let rClean = r.replace(/\[SEND_.*?\]/g, "").replace(/\[RECEIPT_.*?\]/g, "");
-            historial.push({ role: "assistant", content: rClean });
-        }
-        return r;
-    } catch (e) { return "Un momento, verificando disponibilidad..."; }
+        return completion.choices[0].message.content;
+    } catch (e) { return "Un momento..."; }
 }
 
-// --- 7. PROCESAMIENTO ---
+// ==============================================================================
+// 6. PROCESADOR PRINCIPAL DE MENSAJES (EL POLICÍA)
+// ==============================================================================
 async function procesarMensaje(telefono) {
     const buffer = messageBuffers.get(telefono);
     if (!buffer) return;
     messageBuffers.delete(telefono);
 
+    // 1. INICIALIZAR ESTADO
+    if (!clientState.has(telefono)) {
+        clientState.set(telefono, { 
+            paso: 'INICIO', 
+            metodo: null, 
+            datos: new Set(), 
+            saludo_enviado: false 
+        });
+    }
+    const estado = clientState.get(telefono);
+
+    // 2. ANTI-INSULTOS (BLOQUEO INMEDIATO)
+    const txtLower = buffer.texto.toLowerCase();
+    const contieneInsulto = INSULTOS.some(insulto => txtLower.includes(insulto));
+    
+    if (contieneInsulto) {
+        await client.sendMessage(telefono, "Si va a ofender o insultar solo porque no le gusta la promoción, entonces no se moleste en escribir, no está obligado a comprar, sus datos pasarán a una base de datos feliz día 👋.");
+        blockUser.run(telefono); // Guardar en lista negra
+        clientState.delete(telefono);
+        return; // FIN
+    }
+
     const chat = await client.getChatById(telefono);
     await chat.sendStateTyping();
     await sleep(2000, 3000);
 
-    // Detección de intención para guardar estado
-    const textoLower = buffer.texto.toLowerCase();
-    if (textoLower.includes("pago movil")) clientState.set(telefono, "pm");
-    if (textoLower.includes("transferencia")) clientState.set(telefono, "transf");
-    if (textoLower.includes("binance") || textoLower.includes("usdt")) clientState.set(telefono, "usdt");
-
-    const respuestaIA = await consultarIA(telefono, buffer.texto, buffer.mediaData, buffer.mimeType, buffer.tieneVideo, buffer.esOrden);
-    
-    // Limpieza de TAGS para el usuario
-    let respuestaFinal = respuestaIA
-        .replace("[SEND_USDT_INFO]", "")
-        .replace("[SEND_PM_INFO]", "")
-        .replace("[SEND_TRANSF_INFO]", "")
-        .replace("[RECEIPT_RECEIVED]", "")
-        .trim();
-
-    if (respuestaFinal) await client.sendMessage(telefono, respuestaFinal);
-
-    // --- ACCIONES AUTOMÁTICAS ---
-
-    // 1. ENVÍO DE USDT
-    if (respuestaIA.includes("[SEND_USDT_INFO]")) {
-        // Texto exacto solicitado
-        const textoUSDT = `Total a Pagar: USDT 🪙\nRed BSC BEP-20\nDirección de Pago:\n\n0x6253583241337456B1C82452C2B430241c2c80bC\n\n⚠️ Guia de pago via Binance 🔶\n1- En Binance pulse "ENVIAR"\n2- Pulse "Retiro en Cadena"\n3- Seleccione USDT 🪙\n4- En Dirección colocar dirección de Pago.\n5- En Red seleccionar la primera BSC.\n6- Colocar el monto y Pulse "RETIRAR"\n\n➡️ MultiMax a su servicio, recuerde enviar captura del comprobante de pago por favor. 👍`;
-        await client.sendMessage(telefono, textoUSDT);
-        await enviarImagenLocal(telefono, "usdtqr.jpg");
+    // 3. ANÁLISIS TÉCNICO DE DATOS (Detectar qué envió el usuario)
+    // Solo procesamos datos si estamos en fase de REQUISITOS para no confundir direcciones de consulta
+    if (estado.paso === 'REQUISITOS') {
+        if (txtLower.includes("calle") || txtLower.includes("casa") || txtLower.includes("av") || txtLower.includes("estado")) estado.datos.add("direccion");
+        if (buffer.tieneVideo) estado.datos.add("video");
+        if (/\d{6,8}/.test(txtLower) || buffer.mediaData) estado.datos.add("cedula"); // Foto o número
     }
 
-    // 2. ENVÍO DE DATOS BANCARIOS (PM / TRANSF)
-    if (respuestaIA.includes("[SEND_PM_INFO]") || respuestaIA.includes("[SEND_TRANSF_INFO]")) {
-        await sleep(4000, 5000); // Espera 4 seg para realismo
-        let estado = clientState.get(telefono);
-        
-        // Prioridad al tag de la IA
-        if (respuestaIA.includes("PM_INFO")) estado = "pm";
-        if (respuestaIA.includes("TRANSF_INFO")) estado = "transf";
+    // 4. CONSULTA A LA IA
+    const respuestaIA = await consultarIA(telefono, buffer.texto, buffer.mediaData, buffer.mimeType, buffer.tieneVideo, buffer.esOrden, estado);
 
-        // Enviar imagen
-        if (estado === "pm") await enviarImagenLocal(telefono, "pago_movil.jpg");
-        else await enviarImagenLocal(telefono, "transferencia.jpg");
+    // ==========================================================================
+    // 5. LÓGICA DE CONTROL (COMPUERTAS)
+    // ==========================================================================
 
-        // Enviar Ultimátum
-        const ultimatum = "Para la compra, dispondrá de 10 minutos para completar el trámite o el sistema cerrará la orden automáticamente, por favor CONFIRME las condiciones de compra y que realmente posee la disponibilidad del pago para proceder.";
-        await client.sendMessage(telefono, ultimatum);
+    // A. CIERRE POR EFECTIVO
+    if (respuestaIA.includes("[CLOSE_CASH]")) {
+        await client.sendMessage(telefono, respuestaIA.replace("[CLOSE_CASH]", ""));
+        clientState.delete(telefono);
+        return;
+    }
 
+    // B. SELECCIÓN DE MÉTODO
+    if (respuestaIA.includes("[SET_PM]")) { estado.metodo = 'pm'; estado.paso = 'REQUISITOS'; }
+    if (respuestaIA.includes("[SET_TRANSF]")) { estado.metodo = 'transf'; estado.paso = 'REQUISITOS'; }
+    if (respuestaIA.includes("[SET_USDT]")) { estado.metodo = 'usdt'; estado.paso = 'REQUISITOS'; }
+
+    // C. INTENTO DE AVANZAR A CONFIRMACIÓN (EL MOMENTO DE LA VERDAD)
+    if (respuestaIA.includes("[TRIGGER_CHECK_COMPLETE]")) {
+        // VERIFICACIÓN ESTRICTA (HARDCODED)
+        const tieneCedula = estado.datos.has("cedula");
+        const tieneDirec = estado.datos.has("direccion");
+        const tieneVideo = estado.datos.has("video");
+
+        let puedeAvanzar = false;
+        let falta = "";
+
+        if (estado.metodo === 'usdt') {
+            if (tieneCedula && tieneDirec) puedeAvanzar = true;
+            else falta = "la Cédula o la Dirección";
+        } else {
+            // Bolívares
+            if (tieneCedula && tieneDirec && tieneVideo) puedeAvanzar = true;
+            else if (!tieneVideo) falta = "el VIDEO de confirmación";
+            else falta = "algún requisito (Cédula o Dirección)";
+        }
+
+        if (puedeAvanzar) {
+            estado.paso = 'CONFIRMACION';
+            // Forzamos a la IA a soltar el ultimátum inmediatamente
+            const msgUltimatum = await consultarIA(telefono, "TRIGGER_ULTIMATUM_NOW", null, null, false, false, estado);
+            await client.sendMessage(telefono, msgUltimatum.replace("[TRIGGER_PAYMENT_SEND]", ""));
+        } else {
+            // RECHAZAMOS EL AVANCE
+            await client.sendMessage(telefono, `Disculpe, para avanzar necesitamos confirmar ${falta}. Por favor envíelo para procesar su pago.`);
+        }
+        return;
+    }
+
+    // D. INTENTO DE ENVÍO DE PAGO
+    if (respuestaIA.includes("[TRIGGER_PAYMENT_SEND]")) {
+        // Verificar que realmente estamos en confirmación (Doble seguridad)
+        if (estado.paso !== 'CONFIRMACION') {
+             // Si la IA alucinó y mandó pago antes de tiempo, bloqueamos.
+             await client.sendMessage(telefono, "Por favor confirme primero las condiciones anteriores. ☝️");
+             return;
+        }
+
+        let cleanMsg = respuestaIA.replace("[TRIGGER_PAYMENT_SEND]", "").trim();
+        if (cleanMsg) await client.sendMessage(telefono, cleanMsg);
+
+        // ENVÍO DE DATOS + IMAGEN
+        if (estado.metodo === 'usdt') {
+            await client.sendMessage(telefono, `Total a Pagar: USDT 🪙\nRed BSC BEP-20\nDirección: 0x6253583241337456B1C82452C2B430241c2c80bC\n\n(Esperando comprobante 👍)`);
+            await enviarImagenLocal(telefono, "usdtqr.jpg");
+        } else {
+            await client.sendMessage(telefono, "Información recibida. Enviando datos de Finanzas...");
+            await sleep(2000, 3000);
+            const imgFile = estado.metodo === 'pm' ? "pago_movil.jpg" : "transferencia.jpg";
+            await enviarImagenLocal(telefono, imgFile);
+        }
+
+        estado.paso = 'PAGO';
         // Timer de seguimiento 10 min
         setTimeout(async () => {
-            if (chatHistory.has(telefono)) { 
-                await client.sendMessage(telefono, "¿Todo bien con el pago? ¿Logró realizar la operación? ⏳");
-            }
+            if (clientState.has(telefono)) await client.sendMessage(telefono, "¿Todo bien con el pago? ¿Logró realizar la operación? ⏳");
         }, 10 * 60 * 1000);
+        return;
     }
 
-    // 3. RECEPCIÓN DE COMPROBANTE
-    if (respuestaIA.includes("[RECEIPT_RECEIVED]")) {
-        let tipoPago = clientState.get(telefono) === "usdt" ? "USDT" : (clientState.get(telefono) === "pm" ? "Pago Movil" : "Transferencia");
-        
-        if (buffer.mediaData && !buffer.tieneVideo) { // Si hay foto y no es video
-            const imgBuffer = Buffer.from(buffer.mediaData, 'base64');
-            await notificarPagoTelegram(tipoPago, imgBuffer, "Credito");
+    // E. RESPUESTA NORMAL (LIMPIEZA DE TAGS)
+    let respuestaFinal = respuestaIA
+        .replace(/\[SET_.*?\]/g, "")
+        .replace("[TRIGGER_CHECK_COMPLETE]", "")
+        .replace("[TRIGGER_PAYMENT_SEND]", "")
+        .trim();
+
+    if (respuestaFinal) {
+        await client.sendMessage(telefono, respuestaFinal);
+        estado.saludo_enviado = true; // Marcar que ya hablamos
+    }
+
+    // F. RECEPCIÓN DE PAGO FINAL
+    if (estado.paso === 'PAGO' && (buffer.mediaData || txtLower.includes("listo") || txtLower.includes("pagué"))) {
+        let label = estado.metodo === 'usdt' ? "USDT" : "Bolívares";
+        if (buffer.mediaData) {
+            const buf = Buffer.from(buffer.mediaData, 'base64');
+            await notificarPagoTelegram(label, buf, "Credito");
         } else {
-            await notificarPagoTelegram(tipoPago, null, "Credito (Cliente confirmó texto)");
+            await notificarPagoTelegram(label, null, "Credito (Texto)");
         }
-        chatHistory.delete(telefono); // Cerrar chat
+        await client.sendMessage(telefono, "Información recibida, verificando... ⏳");
+        clientState.delete(telefono);
     }
 }
 
-// --- 8. INICIO ---
+// ==============================================================================
+// 7. EVENTOS DEL SISTEMA
+// ==============================================================================
 client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
 
 client.on('ready', () => {
-    console.log('🔗 Conexión OK.');
-    const MINUTOS_ESPERA = 5;
-    console.log(`🛡️ PROTOCOLO DE SEGURIDAD: Silencio por ${MINUTOS_ESPERA} min.`);
+    console.log('🔗 Conexión Exitosa.');
+    console.log('🛡️ MODO V22: Iniciando Cuarentena de 5 minutos...');
     
     setTimeout(() => {
         botReadyTime = Math.floor(Date.now() / 1000); 
         isReady = true; 
-        console.log(`✅ GREILUZ V17 ONLINE (Fix: Video/Imágenes/Ventas).`);
-    }, MINUTOS_ESPERA * 60 * 1000); 
+        console.log(`✅ GREILUZ V22 "GOD MODE" ACTIVA.`);
+    }, 5 * 60 * 1000); 
 });
 
 client.on('message', async msg => {
+    // --- ADMIN UPLOAD (CARGA DE IMÁGENES) ---
+    if (msg.body.startsWith(`!${CLAVE_ADMIN}`)) {
+        if (!msg.hasMedia) return msg.reply("❌ Adjunta la foto con el comando.");
+        const cmd = msg.body.toLowerCase();
+        let fname = "";
+        
+        if (cmd.includes("pm")) fname = "pago_movil.jpg";
+        else if (cmd.includes("transf")) fname = "transferencia.jpg";
+        else if (cmd.includes("usdt")) fname = "usdtqr.jpg";
+        else return msg.reply("❌ Comandos: !admin123 pm | transf | usdt");
+
+        try {
+            const media = await msg.downloadMedia();
+            fs.writeFileSync(path.join(ASSETS_PATH, fname), media.data, 'base64');
+            return msg.reply(`✅ Imagen ${fname} actualizada y lista.`);
+        } catch (e) { return msg.reply("Error guardando: " + e.message); }
+    }
+    // ------------------------------------------
+
     if (!isReady) return;
     if (msg.timestamp < botReadyTime) return;
 
-    // FILTROS
-    const horaVE = parseInt(new Date().toLocaleTimeString('es-VE', {timeZone:'America/Caracas', hour:'2-digit', hour12:false}));
-    if (horaVE < 8 || horaVE >= 22) return; // Horario ajustado 8AM - 10PM
+    // HORARIO 8AM - 10PM
+    const h = parseInt(new Date().toLocaleTimeString('es-VE', {timeZone:'America/Caracas', hour:'2-digit', hour12:false}));
+    if (h < 8 || h >= 22) return;
 
+    // FILTROS
+    if (checkBlocked.get(msg.from)) return; // Usuario bloqueado
     if (checkMessage.get(msg.id.id)) return;
     insertMessage.run(msg.id.id, msg.timestamp);
-
     if (msg.fromMe || msg.isStatus) return;
 
-    // ANTI-PTT (Notas de voz)
-    if (msg.type === 'ptt' || msg.type === 'audio') {
-        return client.sendMessage(msg.from, "No escuchamos notas de voz. Por favor escriba. ✍️");
-    }
+    // ANTI-AUDIO
+    if (msg.type === 'ptt' || msg.type === 'audio') return client.sendMessage(msg.from, "No escuchamos notas de voz. Por favor escriba. ✍️");
 
     const tel = msg.from;
+    
+    // BUFFER INTELIGENTE
     if (!messageBuffers.has(tel)) {
-        messageBuffers.set(tel, {
-            texto: "", mediaData: null, mimeType: null, timer: null, 
-            esOrden: false, tieneVideo: false // NUEVA BANDERA
-        });
+        messageBuffers.set(tel, { texto: "", mediaData: null, mimeType: null, timer: null, esOrden: false, tieneVideo: false });
     }
     const buf = messageBuffers.get(tel);
 
-    // ACUMULACIÓN DE CONTENIDO
-    if (msg.type === 'order') { buf.esOrden = true; buf.texto += `[Pedí: ${msg.body}] `; }
+    // LECTURA DE CATÁLOGO / TEXTO
+    if (msg.type === 'order') {
+        buf.esOrden = true;
+        try {
+            const orden = await msg.getOrder();
+            const productos = orden.products.map(p => p.name).join(", ");
+            buf.texto += `[ORDEN CATÁLOGO: ${productos}] `;
+        } catch(e) { buf.texto += `[ORDEN CATÁLOGO] `; }
+    } 
     else if (msg.body) buf.texto += msg.body + " ";
 
-    // MANEJO DE ARCHIVOS (FOTO Y VIDEO)
+    // LECTURA MULTIMEDIA
     if (msg.hasMedia) {
         try {
             const media = await msg.downloadMedia();
             if (media) {
-                // Si es VIDEO
-                if (media.mimetype.startsWith('video/')) {
-                    buf.tieneVideo = true; // ¡AQUÍ ESTÁ LA CORRECCIÓN!
-                    console.log(`🎥 Video detectado de ${tel}`);
-                } 
-                // Si es IMAGEN
+                if (media.mimetype.startsWith('video/')) buf.tieneVideo = true;
                 else if (media.mimetype.startsWith('image/') && media.filesize < 20*1024*1024) {
                     buf.mediaData = media.data;
                     buf.mimeType = media.mimetype;
@@ -330,6 +410,7 @@ client.on('message', async msg => {
         } catch(e){}
     }
 
+    // TIMER 7 SEGUNDOS
     if (buf.timer) clearTimeout(buf.timer);
     buf.timer = setTimeout(() => procesarMensaje(tel), 7000);
 });
