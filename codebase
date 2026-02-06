@@ -8,60 +8,94 @@ const fs = require('fs');
 const path = require('path');
 
 // ==============================================================================
-// 1. CONFIGURACIÓN Y RUTAS
+// 1. CONFIGURACIÓN DEL SISTEMA Y RUTAS
 // ==============================================================================
 const CLAVE_ADMIN = "admin123"; 
 const ASSETS_PATH = path.join(__dirname, 'src', 'assets');
 if (!fs.existsSync(ASSETS_PATH)) fs.mkdirSync(ASSETS_PATH, { recursive: true });
 
-// Base de Datos
+// Base de Datos SQLite (Persistencia de contexto y bloqueos)
 const db = new Database('memoria.db');
 db.exec(`
   CREATE TABLE IF NOT EXISTS processed_messages (id TEXT PRIMARY KEY, timestamp INTEGER);
   CREATE TABLE IF NOT EXISTS blocked_users (phone TEXT PRIMARY KEY);
 `);
+
+// Sentencias Preparadas (Optimización)
 const insertMessage = db.prepare('INSERT OR IGNORE INTO processed_messages (id, timestamp) VALUES (?, ?)');
 const checkMessage = db.prepare('SELECT id FROM processed_messages WHERE id = ?');
 const blockUser = db.prepare('INSERT OR IGNORE INTO blocked_users (phone) VALUES (?)');
 const checkBlocked = db.prepare('SELECT phone FROM blocked_users WHERE phone = ?');
 
 // ==============================================================================
-// 2. CLIENTES
+// 2. CLIENTES DE API
 // ==============================================================================
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const client = new Client({ authStrategy: new LocalAuth(), puppeteer: { args: ['--no-sandbox'] } });
 
-// Telegram
+// Cliente Telegram (Solo Notificaciones)
 const TelegramBot = require('node-telegram-bot-api');
 const tBot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false });
 const ADMIN_ID = parseInt(process.env.TELEGRAM_ADMIN_ID);
 const GROUP_ID = process.env.TELEGRAM_GROUP_ID;
 
-// Variables de Estado
+// ==============================================================================
+// 3. VARIABLES DE ESTADO Y SEGURIDAD
+// ==============================================================================
 const messageBuffers = new Map();
 const clientState = new Map(); 
+// Estructura del Estado: 
+// { 
+//   paso: 'INICIO' | 'REQUISITOS' | 'CONFIRMACION' | 'PAGO', 
+//   metodo: null, 
+//   datos: Set(), 
+//   saludo_enviado: false, 
+//   catalog_sent: false 
+// }
 
 let isReady = false; 
 let botReadyTime = 0; 
-let tasaBCV = 60.00;
+let tasaBCV = 60.00; // Valor inicial por defecto
 
-const INSULTOS = ["estafa", "ladrón", "ladron", "rata", "maldito", "maldita", "basura", "mierda", "csm", "mamaguevo", "estafadores", "robo", "coño"];
+const INSULTOS = ["estafa", "ladrón", "ladron", "rata", "maldito", "maldita", "basura", "mierda", "csm", "mamaguevo", "estafadores", "robo", "coño", "mamaguevo", "mmg"];
 
 // ==============================================================================
-// 3. FINANZAS Y HERRAMIENTAS
+// 4. MÓDULO FINANCIERO (CÁLCULOS REALES)
 // ==============================================================================
+
+// Actualizador de Tasa BCV (Cada 1 hora)
 async function actualizarTasaBCV() {
     try {
         const res = await axios.get('https://ve.dolarapi.com/v1/dolares/oficial');
         if (res.data?.promedio) {
             tasaBCV = parseFloat(res.data.promedio).toFixed(2);
-            console.log(`💵 Tasa BCV Actualizada: ${tasaBCV}`);
+            console.log(`💵 Tasa BCV Actualizada: ${tasaBCV} Bs/$`);
         }
-    } catch (e) { console.error("Error obteniendo Tasa BCV"); }
+    } catch (e) { console.error("⚠️ Error obteniendo Tasa BCV (Manteniendo anterior)"); }
 }
 actualizarTasaBCV();
-setInterval(actualizarTasaBCV, 3600000); // 1 hora
+setInterval(actualizarTasaBCV, 3600000);
 
+// Función Matemática Pura (Reemplaza los tokens de la IA)
+function procesarCalculoMatematico(textoIA) {
+    // Busca el token [CALCULAR_BS: numero]
+    // Ejemplo: "El precio es [CALCULAR_BS: 50]" -> "El precio es Bs. 3000.00"
+    const regex = /\[CALCULAR_BS:\s*(\d+(?:\.\d+)?)\]/g;
+    
+    return textoIA.replace(regex, (match, montoStr) => {
+        const monto = parseFloat(montoStr);
+        if (isNaN(monto)) return match;
+        
+        const enBs = (monto * tasaBCV).toLocaleString('es-VE', { minimumFractionDigits: 2 });
+        const enUSDT = (monto * 0.50).toFixed(2);
+        
+        return `Bs. ${enBs} (Tasa BCV: ${tasaBCV}) | O llévatelo en USDT por: ${enUSDT} (50% OFF)`;
+    });
+}
+
+// ==============================================================================
+// 5. HERRAMIENTAS DE SISTEMA
+// ==============================================================================
 const sleep = (min, max) => new Promise(r => setTimeout(r, Math.floor(Math.random() * (max - min + 1) + min)));
 
 async function notificarPagoTelegram(tipo, buffer, captionText) {
@@ -78,111 +112,120 @@ async function enviarImagenLocal(telefono, nombreArchivo) {
         const media = MessageMedia.fromFilePath(filePath);
         await client.sendMessage(telefono, media);
     } else {
-        await client.sendMessage(telefono, "⚠️ (Imagen cargando, guíese por el texto arriba).");
+        await client.sendMessage(telefono, "⚠️ (La imagen de pago se está actualizando, use los datos de texto arriba).");
     }
 }
 
 // ==============================================================================
-// 4. CEREBRO IA (BASE DE CONOCIMIENTO EXTENDIDA)
+// 6. CEREBRO IA (GREILUZ V25)
 // ==============================================================================
 async function consultarIA(telefono, texto, imgBase64, mimeType, tieneVideo, esOrden, estado) {
     const now = new Date();
     const horaVE = parseInt(now.toLocaleTimeString('es-VE', {timeZone:'America/Caracas', hour:'2-digit', hour12:false}));
     let saludo = horaVE < 12 ? "Buenos días ☀️" : (horaVE < 18 ? "Buenas tardes 🌤️" : "Buenas noches 🌙");
-    if (estado.saludo_enviado) saludo = "";
+    if (estado.saludo_enviado) saludo = ""; // Evitar saludo doble
 
-    // LÓGICA DE CATÁLOGO INTELIGENTE
+    // LÓGICA DE CATÁLOGO (Memoria de Contexto)
     let instruccionCatalogo = "";
     if (estado.catalog_sent) {
-        instruccionCatalogo = `Si pide ver productos sin enviar foto, dile: "Por favor revise el catálogo que le envié arriba 👆".`;
+        instruccionCatalogo = `EL CATÁLOGO YA FUE ENVIADO ANTES. Si piden ver productos, NO envíes links. Di: "Por favor revise el catálogo que le envié más arriba 👆".`;
     } else {
-        instruccionCatalogo = `Si pide ver productos o precios SIN enviar foto: ESTÁS OBLIGADO a enviar los links:
-        Telegram: (https://t.me/Tiendaonline_oficial_bot)
-        WhatsApp: (https://wa.me/c/447848106109)
-        Y di: "Aquí tiene nuestro catálogo, avíseme si le gusta algo". -> USA EL TAG: [CATALOG_SENT].`;
+        instruccionCatalogo = `Si piden ver productos SIN foto específica, DEBES enviar los links: (Telegram https://t.me/Tiendaonline_oficial_bot | WhatsApp https://wa.me/c/447848106109) y usa el TAG [CATALOG_SENT].`;
     }
 
-    // BASE DE CONOCIMIENTO (DIRECCIONES Y GARANTÍAS)
-    const baseConocimiento = `
-    DIRECCIONES TIENDAS (Solo si preguntan ubicación):
-    - Barquisimeto: Av. Lara, entre calles 8 y 11, edif El Castillo.
-    - Maracaibo: Av. La Limpia, al lado de Traki.
-    - Ciudad Bolívar: Calle los Apamates, Sector Medina Angarita.
-    - Valencia/Carabobo: Autopista del Este, vía servicio Manongo, Supermercado Forum.
-    - Falcón: Carretera Nacional Coro, Punto Fijo, distribuidor El Sabino.
-    - San Cristóbal: CC Sambil, nivel autopista, local L15.
+    // BASE DE CONOCIMIENTO (Extraída de Problema.md y README.md)
+    const knowledgeBase = `
+    UBICACIONES TIENDAS:
+    - Barquisimeto: Av. Lara, edif El Castillo.
+    - Maracaibo: Av. La Limpia.
+    - Ciudad Bolívar: Sector Medina Angarita.
+    - Valencia: Autopista del Este, Forum.
+    - Falcón: Punto Fijo, distribuidor El Sabino.
+    - San Cristóbal: CC Sambil.
 
     POLÍTICAS:
-    - Garantía: Artículos <$50 tienen 8 meses. Artículos >$50 tienen 1 año.
-    - Créditos (Credimax): Primera compra >$250 contado. Segunda compra: Inicial 60% + 4 cuotas.
-    - Horario: Lunes a Domingo 6AM - 11PM.
-    - Notas de Voz: NO ATENDEMOS AUDIOS.
+    - GARANTÍA: <$50 (8 meses), >$50 (1 año).
+    - ENVÍOS: Gratis Zoom/MRW (Solo compras Online).
+    - EFECTIVO: Solo en Tienda Física. (Si piden pagar efectivo, manda a tienda).
+    - ONLINE: Solo aceptamos Bs (Tasa BCV) o USDT.
     `;
 
-    // INSTRUCCIONES DE FASE
-    let instruccionesFase = "";
+    // INSTRUCCIONES DE FLUJO (DISCERNIMIENTO)
+    let flowInstructions = "";
 
     if (estado.paso === 'INICIO') {
-        instruccionesFase = `
-        [FASE: VENTAS]
-        Inventario: Electrodomésticos, Hogar, Starlink, Juguetes, Perfumes. (NO cauchos/repuestos).
+        flowInstructions = `
+        [FASE: VENTAS / ATENCIÓN]
+        TU OBJETIVO: Aclarar dudas y cerrar venta.
         
-        ACCIONES:
-        1. FOTO/ORDEN: "Excelente elección. Sí tenemos disponible ✅ con garantía." (Espera intención de compra).
-        2. SOLO TEXTO (Precio?): ${instruccionCatalogo}
-        3. DIRECCIÓN (Consulta Temprana): "Sí cubrimos esa zona ✅. Envíos Gratis Zoom/MRW. ¿Desea hacer un pedido?". (NO PIDAS REQUISITOS AÚN).
-        4. EFECTIVO: "Para pagos en efectivo 💵 le esperamos en tiendas físicas. Por aquí solo procesamos Bs o USDT con envío." -> TAG: [CLOSE_CASH].
-        5. COMPRAR: Pregunta "¿Cuál es su método de pago? (Bs Pago Móvil/Transf o Binance USDT)".
+        REGLAS DE DISCERNIMIENTO (IMPORTANTE):
+        1. SI PREGUNTAN CONVERSIÓN ("¿Cuánto son $20 en Bs?", "¿Precio en bolívares?"): 
+           - NO CALCULES TÚ. Responde con el token: [CALCULAR_BS: numero]. Ej: [CALCULAR_BS: 20].
         
-        TAGS METODOS: [SET_PM], [SET_TRANSF], [SET_USDT].
+        2. SI PREGUNTAN CONFIRMACIÓN ("¿El precio es en dólares?", "¿Son divisas?"):
+           - Responde texto normal: "Sí, nuestros precios publicados son en dólares". (NO uses el token de cálculo).
+
+        3. SI ENVÍAN DIRECCIÓN (Temprana):
+           - Solo confirma cobertura: "Sí cubrimos esa zona con envío gratis ✅. ¿Desea ordenar?". (NO pidas cédula aún).
+
+        4. SI DICEN "EFECTIVO":
+           - "Para pagos en efectivo 💵 le esperamos en tiendas físicas. Por aquí solo procesamos envíos (Bs/USDT)." -> TAG: [CLOSE_CASH].
+
+        5. INTENCIÓN DE COMPRA CLARA:
+           - Pregunta: "¿Cuál es su método de pago? (Bs Pago Móvil/Transf o Binance USDT)".
+        
+        TAGS: [SET_PM], [SET_TRANSF], [SET_USDT].
+        ${instruccionCatalogo}
         `;
     } 
     else if (estado.paso === 'REQUISITOS') {
-        instruccionesFase = `
+        flowInstructions = `
         [FASE: REQUISITOS - MÉTODO: ${estado.metodo.toUpperCase()}]
-        YA TENEMOS: ${JSON.stringify(Array.from(estado.datos))}.
-        FALTA OBLIGATORIO:
+        DATOS YA RECIBIDOS: ${JSON.stringify(Array.from(estado.datos))}.
+        
+        FALTAN:
         - USDT: Cédula + Dirección.
         - PM/Transf: Cédula + Dirección + VIDEO.
         
         ACCIÓN:
-        - Si envía dato: "Recibido. Solo falta [lo que falte]".
-        - Si tiene TODO: Responde TAG: [TRIGGER_CHECK_COMPLETE].
+        - Si envía un dato, confírmalo.
+        - Si envía TODO lo necesario: Responde ÚNICAMENTE EL TAG: [TRIGGER_CHECK_COMPLETE].
         `;
     } 
     else if (estado.paso === 'CONFIRMACION') {
-        instruccionesFase = `
+        flowInstructions = `
         [FASE: ULTIMÁTUM]
-        Tu respuesta DEBE SER: "Para la compra, dispondrá de 10 minutos para completar el trámite o el sistema cerrará la orden automáticamente, por favor CONFIRME las condiciones de compra y que realmente posee la disponibilidad del pago para proceder. ⏳"
-        Si el usuario confirma (Sí/Ok): TAG: [TRIGGER_PAYMENT_SEND].
+        Responde EXACTAMENTE:
+        "Para la compra, dispondrá de 10 minutos para completar el trámite o el sistema cerrará la orden automáticamente, por favor CONFIRME las condiciones de compra y que realmente posee la disponibilidad del pago para proceder. ⏳"
+        
+        Si confirma (Sí/Ok): TAG: [TRIGGER_PAYMENT_SEND].
         `;
     }
 
     const systemPrompt = `
-    Eres Greiluz Martinez, ejecutiva de ventas (Humana, amable, profesional).
-    NO digas "Multimax" en el saludo.
-    ${saludo ? `Saludo: "${saludo}".` : "No saludes de nuevo."}
+    Eres Greiluz Martinez, Asesora Multimax (Humana, amable).
+    ${saludo ? `Saludo: "${saludo}".` : "NO saludes de nuevo."}
     Tasa BCV: ${tasaBCV}.
-    Cálculos: Foto($) -> Bs (x${tasaBCV}) | USDT (50% desc).
-    ${baseConocimiento}
-    ${instruccionesFase}
+    
+    ${knowledgeBase}
+    ${flowInstructions}
     `;
 
     let historial = [{ role: "system", content: systemPrompt }];
     
-    // Inyección de Contexto Multimedia
+    // INYECCIÓN DE CONTEXTO MULTIMEDIA
     let userInput = texto;
     if (esOrden) userInput = `[ORDEN CATÁLOGO WA]. ${texto}`;
     if (tieneVideo) userInput += " [VIDEO DETECTADO] ";
     
-    // Manejo de Imágenes (Base64 o Fallback)
+    // Manejo de Imágenes (Forwarded o Directas)
     if (imgBase64) {
         historial.push({ role: "user", content: [
             {type: "text", text: userInput}, 
             {type: "image_url", image_url: {url: `data:${mimeType};base64,${imgBase64}`}}
         ]});
     } else {
-        // Truco para imágenes reenviadas que no descargaron bien o solo son "media"
+        // Truco para detectar imágenes reenviadas que WhatsApp web a veces no descarga full
         if (mimeType && mimeType.startsWith('image/')) userInput += " [SISTEMA: EL CLIENTE ENVIÓ UNA FOTO/IMAGEN REFERENCIAL] ";
         historial.push({ role: "user", content: userInput });
     }
@@ -191,22 +234,22 @@ async function consultarIA(telefono, texto, imgBase64, mimeType, tieneVideo, esO
         const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
             messages: historial,
-            max_tokens: 400,
-            temperature: 0.1
+            max_tokens: 500,
+            temperature: 0.1 
         });
         return completion.choices[0].message.content;
-    } catch (e) { return "Un momento, verificando sistema..."; }
+    } catch (e) { return "Un momento..."; }
 }
 
 // ==============================================================================
-// 5. PROCESADOR DE MENSAJES (CONTROL TOTAL)
+// 7. PROCESADOR DE MENSAJES (MOTOR DE ESTADOS)
 // ==============================================================================
 async function procesarMensaje(telefono) {
     const buffer = messageBuffers.get(telefono);
     if (!buffer) return;
     messageBuffers.delete(telefono);
 
-    // 1. GESTIÓN DE ESTADO
+    // A. INICIALIZAR ESTADO
     if (!clientState.has(telefono)) {
         clientState.set(telefono, { 
             paso: 'INICIO', metodo: null, datos: new Set(), 
@@ -215,7 +258,7 @@ async function procesarMensaje(telefono) {
     }
     const estado = clientState.get(telefono);
 
-    // 2. FILTRO ANTI-INSULTOS
+    // B. FILTRO ANTI-INSULTOS (BLOQUEO INMEDIATO)
     const txtLower = buffer.texto.toLowerCase();
     if (INSULTOS.some(i => txtLower.includes(i))) {
         await client.sendMessage(telefono, "Si va a ofender o insultar solo porque no le gusta la promoción, entonces no se moleste en escribir, no está obligado a comprar, sus datos pasarán a una base de datos feliz día 👋.");
@@ -226,76 +269,78 @@ async function procesarMensaje(telefono) {
 
     const chat = await client.getChatById(telefono);
     await chat.sendStateTyping();
-    await sleep(2000, 3000);
+    await sleep(2000, 3000); 
 
-    // 3. CAPTURA DE DATOS (Solo si estamos en Requisitos)
-    // Esto evita que una dirección temprana cuente como requisito
+    // C. RECOLECCIÓN DE DATOS (Solo en fase Requisitos)
     if (estado.paso === 'REQUISITOS') {
-        if (txtLower.includes("calle") || txtLower.includes("casa") || txtLower.includes("av") || txtLower.includes("estado") || txtLower.includes("municipio")) estado.datos.add("direccion");
+        if (txtLower.includes("calle") || txtLower.includes("casa") || txtLower.includes("av") || txtLower.includes("municipio")) estado.datos.add("direccion");
         if (buffer.tieneVideo) estado.datos.add("video");
         if (/\d{6,8}/.test(txtLower) || buffer.mediaData) estado.datos.add("cedula");
     }
 
-    // 4. CONSULTA
-    const respuestaIA = await consultarIA(telefono, buffer.texto, buffer.mediaData, buffer.mimeType, buffer.tieneVideo, buffer.esOrden, estado);
+    // D. CONSULTA AL CEREBRO
+    let respuestaIA = await consultarIA(telefono, buffer.texto, buffer.mediaData, buffer.mimeType, buffer.tieneVideo, buffer.esOrden, estado);
 
-    // 5. COMPUERTAS LÓGICAS
+    // E. EJECUCIÓN DE HERRAMIENTAS (TOOL USE)
 
-    // A. Flag de Catálogo
+    // 1. CÁLCULO MATEMÁTICO (Interceptar Token)
+    if (respuestaIA.includes("[CALCULAR_BS:")) {
+        respuestaIA = procesarCalculoMatematico(respuestaIA);
+    }
+
+    // 2. FLAG CATÁLOGO
     if (respuestaIA.includes("[CATALOG_SENT]")) estado.catalog_sent = true;
 
-    // B. Cierre Efectivo
+    // 3. CIERRE EFECTIVO
     if (respuestaIA.includes("[CLOSE_CASH]")) {
         await client.sendMessage(telefono, respuestaIA.replace("[CLOSE_CASH]", ""));
         clientState.delete(telefono);
         return;
     }
 
-    // C. Selección de Método
+    // 4. CAMBIO DE MÉTODO
     if (respuestaIA.includes("[SET_PM]")) { estado.metodo = 'pm'; estado.paso = 'REQUISITOS'; }
     if (respuestaIA.includes("[SET_TRANSF]")) { estado.metodo = 'transf'; estado.paso = 'REQUISITOS'; }
     if (respuestaIA.includes("[SET_USDT]")) { estado.metodo = 'usdt'; estado.paso = 'REQUISITOS'; }
 
-    // D. CHECK REQUISITOS (HARDCODED)
+    // 5. CHECK REQUISITOS (POLICÍA HARDCODED)
     if (respuestaIA.includes("[TRIGGER_CHECK_COMPLETE]")) {
-        const tieneCedula = estado.datos.has("cedula");
-        const tieneDirec = estado.datos.has("direccion");
-        const tieneVideo = estado.datos.has("video");
-        let completo = false;
+        const tCedula = estado.datos.has("cedula");
+        const tDirec = estado.datos.has("direccion");
+        const tVideo = estado.datos.has("video");
+        let aprobado = false;
 
-        // Regla V19: USDT sin video, Bs con video
-        if (estado.metodo === 'usdt') completo = (tieneCedula && tieneDirec);
-        else completo = (tieneCedula && tieneDirec && tieneVideo);
+        // Regla: USDT sin video, Bs con video
+        if (estado.metodo === 'usdt') aprobado = (tCedula && tDirec);
+        else aprobado = (tCedula && tDirec && tVideo);
 
-        if (completo) {
+        if (aprobado) {
             estado.paso = 'CONFIRMACION';
-            // Forzamos el mensaje de Ultimátum
             const msgUlt = await consultarIA(telefono, "TRIGGER_ULTIMATUM", null, null, false, false, estado);
             await client.sendMessage(telefono, msgUlt.replace("[TRIGGER_PAYMENT_SEND]", ""));
         } else {
-            // Decimos qué falta
-            let falta = [];
-            if (!tieneCedula) falta.push("Foto Cédula");
-            if (!tieneDirec) falta.push("Dirección Exacta");
-            if (!tieneVideo && estado.metodo !== 'usdt') falta.push("VIDEO de confirmación");
-            await client.sendMessage(telefono, `Disculpe, para procesar su pago necesitamos validar: ${falta.join(", ")}. Por favor envíelo.`);
+            let faltantes = [];
+            if (!tCedula) faltantes.push("Foto Cédula");
+            if (!tDirec) faltantes.push("Dirección Exacta");
+            if (!tVideo && estado.metodo !== 'usdt') faltantes.push("VIDEO de confirmación");
+            await client.sendMessage(telefono, `Disculpe, falta validar: ${faltantes.join(" + ")}. Por favor envíelo.`);
         }
         return;
     }
 
-    // E. ENVÍO DE PAGO
+    // 6. ENVÍO DE PAGO (SOLO SI CONFIRMÓ)
     if (respuestaIA.includes("[TRIGGER_PAYMENT_SEND]")) {
         if (estado.paso !== 'CONFIRMACION') {
-             await client.sendMessage(telefono, "Por favor confirme primero que está listo para pagar en los próximos 10 min. ☝️");
-             return;
+            await client.sendMessage(telefono, "Por favor confirme condiciones primero (Sí/Ok). ☝️");
+            return;
         }
 
-        let cleanMsg = respuestaIA.replace("[TRIGGER_PAYMENT_SEND]", "").trim();
-        if (cleanMsg) await client.sendMessage(telefono, cleanMsg);
+        let clean = respuestaIA.replace("[TRIGGER_PAYMENT_SEND]", "").trim();
+        if (clean) await client.sendMessage(telefono, clean);
 
-        // Envío según método
+        // Envío de Datos
         if (estado.metodo === 'usdt') {
-            const txtUSDT = `Total a Pagar: USDT 🪙\nRed BSC BEP-20\nDirección de Pago:\n0x6253583241337456B1C82452C2B430241c2c80bC\n\n⚠️ Guia de pago via Binance 🔶\n1- En Binance pulse "ENVIAR"\n2- Pulse "Retiro en Cadena"\n3- Seleccione USDT 🪙\n4- En Dirección colocar dirección de Pago.\n5- En Red seleccionar la primera BSC.\n6- Colocar el monto y Pulse "RETIRAR"\n\n➡️MultiMax a su servicio, recuerde enviar captura del comprobante de pago por favor. 👍`;
+            const txtUSDT = `Total a Pagar: USDT 🪙\nRed BSC BEP-20\nDirección de Pago:\n\n0x6253583241337456B1C82452C2B430241c2c80bC\n\n⚠️ Guia de pago via Binance 🔶\n1- En Binance pulse "ENVIAR"\n2- Pulse "Retiro en Cadena"\n3- Seleccione USDT 🪙\n4- En Dirección colocar dirección de Pago.\n5- En Red seleccionar la primera BSC.\n6- Colocar el monto y Pulse "RETIRAR"\n\n➡️ MultiMax a su servicio, recuerde enviar captura del comprobante.`;
             await client.sendMessage(telefono, txtUSDT);
             await enviarImagenLocal(telefono, "usdtqr.jpg");
         } else {
@@ -312,15 +357,15 @@ async function procesarMensaje(telefono) {
         return;
     }
 
-    // F. RESPUESTA NORMAL
-    let final = respuestaIA.replace(/\[.*?\]/g, "").trim();
-    if (final) {
-        await client.sendMessage(telefono, final);
+    // 7. ENVÍO DE RESPUESTA FINAL (LIMPIA)
+    let finalMsg = respuestaIA.replace(/\[.*?\]/g, "").trim();
+    if (finalMsg) {
+        await client.sendMessage(telefono, finalMsg);
         estado.saludo_enviado = true;
     }
 
-    // G. RECEPCIÓN DE PAGO
-    if (estado.paso === 'PAGO' && (buffer.mediaData || txtLower.includes("listo") || txtLower.includes("pagué") || txtLower.includes("ya hice"))) {
+    // 8. RECEPCIÓN DE PAGO
+    if (estado.paso === 'PAGO' && (buffer.mediaData || txtLower.includes("listo") || txtLower.includes("ya hice"))) {
         let etiqueta = estado.metodo === 'usdt' ? "USDT" : "Bolívares";
         if (buffer.mediaData) {
             const b = Buffer.from(buffer.mediaData, 'base64');
@@ -328,28 +373,28 @@ async function procesarMensaje(telefono) {
         } else {
             await notificarPagoTelegram(etiqueta, null, "Credito (Texto)");
         }
-        await client.sendMessage(telefono, "Informacion recibida, ya se procedera con la correcta verificacion, por favor espere.");
+        await client.sendMessage(telefono, "Información recibida, verificando... ⏳");
         clientState.delete(telefono);
     }
 }
 
 // ==============================================================================
-// 6. EVENTOS Y ARRANQUE SEGURO
+// 8. ARRANQUE SEGURO Y EVENTOS
 // ==============================================================================
 client.on('qr', (qr) => qrcode.generate(qr, { small: true }));
 
 client.on('ready', () => {
     console.log('🔗 Conexión Establecida.');
-    console.log('🛡️ PROTOCOLO DE SEGURIDAD: Esperando 5 minutos para evitar spam viejo...');
+    console.log('🛡️ MODO V25 (ULTRA): Protocolo de 5 min activado...');
     setTimeout(() => {
         botReadyTime = Math.floor(Date.now() / 1000); 
         isReady = true; 
-        console.log(`✅ V24 (FINAL) ACTIVA. Escuchando mensajes nuevos.`);
+        console.log(`✅ GREILUZ ACTIVA Y LISTA.`);
     }, 5 * 60 * 1000); 
 });
 
 client.on('message', async msg => {
-    // 🛠️ CARGA DE IMÁGENES (ADMIN)
+    // ADMIN UPLOAD (Carga de Imágenes por WhatsApp)
     if (msg.body.startsWith(`!${CLAVE_ADMIN}`)) {
         if (!msg.hasMedia) return msg.reply("❌ Falta la foto.");
         const c = msg.body.toLowerCase();
@@ -357,21 +402,20 @@ client.on('message', async msg => {
         if (c.includes("pm")) f = "pago_movil.jpg";
         else if (c.includes("transf")) f = "transferencia.jpg";
         else if (c.includes("usdt")) f = "usdtqr.jpg";
-        else return msg.reply("❌ Comandos: !admin123 pm | transf | usdt");
+        else return msg.reply("❌ !admin123 pm | transf | usdt");
 
         try {
             const m = await msg.downloadMedia();
             fs.writeFileSync(path.join(ASSETS_PATH, f), m.data, 'base64');
-            return msg.reply(`✅ Imagen ${f} guardada exitosamente.`);
+            return msg.reply(`✅ Imagen ${f} guardada.`);
         } catch (e) { return msg.reply("Error: " + e.message); }
     }
 
-    // FILTROS DE SEGURIDAD
-    if (!isReady) return; // Espera de 5 min
-    if (msg.timestamp < botReadyTime) return; // Ignora viejos
-    if (checkBlocked.get(msg.from)) return; // Ignora bloqueados
+    if (!isReady) return;
+    if (msg.timestamp < botReadyTime) return;
+    if (checkBlocked.get(msg.from)) return;
 
-    // HORARIO 8AM - 10PM (VENEZUELA)
+    // Horario 8AM - 10PM
     const h = parseInt(new Date().toLocaleTimeString('es-VE', {timeZone:'America/Caracas', hour:'2-digit', hour12:false}));
     if (h < 8 || h >= 22) return;
 
@@ -379,11 +423,11 @@ client.on('message', async msg => {
     insertMessage.run(msg.id.id, msg.timestamp);
     if (msg.fromMe || msg.isStatus) return;
 
-    if (msg.type === 'ptt' || msg.type === 'audio') return client.sendMessage(msg.from, "No atendemos notas de voz ni llamadas. Por favor escriba. ✍️");
+    if (msg.type === 'ptt' || msg.type === 'audio') return client.sendMessage(msg.from, "No escuchamos notas de voz. ✍️");
 
     const tel = msg.from;
     
-    // BUFFER 7 SEGUNDOS
+    // Buffer Inteligente (7 seg)
     if (!messageBuffers.has(tel)) {
         messageBuffers.set(tel, { texto: "", mediaData: null, mimeType: null, timer: null, esOrden: false, tieneVideo: false });
     }
@@ -406,12 +450,9 @@ client.on('message', async msg => {
                     buf.mediaData = m.data;
                     buf.mimeType = m.mimetype;
                 }
-                if (!buf.mimeType) buf.mimeType = m.mimetype; // Respaldo
+                if (!buf.mimeType) buf.mimeType = m.mimetype;
             }
-        } catch(e) {
-            // Si falla la descarga, al menos marcamos que hubo multimedia
-            if (!buf.mimeType) buf.mimeType = "image/jpeg"; 
-        }
+        } catch(e) { if (!buf.mimeType) buf.mimeType = "image/jpeg"; }
     }
 
     if (buf.timer) clearTimeout(buf.timer);
