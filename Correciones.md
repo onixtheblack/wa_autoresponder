@@ -62,3 +62,33 @@ V21: Corrección de Interpretación de Dirección (Actual)
 
 -Interpretación de Dirección: "Tienes un error en la interpretación". Si el cliente manda la dirección al principio, es para saber si hay envío ("para tantear"), no para cerrar la compra.
 -Ajuste: El bot debe confirmar la cobertura (Zoom/MRW) y preguntar si desea ver productos, en lugar de pedir la cédula de inmediato.
+
+
+V26
+
+Esta versión separa el "Cuerpo" (Ejecución, seguridad, archivos) de la "Mente" (Pensamiento, contexto, ventas). Esto nos permite tener un prompt mucho más extenso y complejo en el cerebro sin saturar el código de conexión.
+Estructura de Archivos
+Tendrás 2 archivos principales en la carpeta src:
+src/cerebro.js (La Inteligencia, Contexto y Reglas de Negocio).
+src/index.js (El Servidor, Conexión WhatsApp y Ejecución de Comandos).
+1. index.js (El Cuerpo y los Músculos) 💪
+Este archivo será el "ejecutor físico". No piensa, solo actúa.
+Se encarga de: Conectarse a WhatsApp, recibir mensajes, detectar si hay fotos, escribir en la base de datos (SQLite), subir archivos, enviar las imágenes de pago, controlar el horario y bloquear insultos.
+Su función: Es el "policía" que hace cumplir las reglas estrictas (si no hay video, no paso el pago).
+2. cerebro.js (La Mente y el Subconsciente) 🧠
+Este archivo será puro pensamiento y lenguaje.
+Se encarga de: La personalidad de Greiluz, la memoria de corto plazo, el contexto de la conversación, entender si el cliente está "tanteando" o comprando, y discernir si "50" son dólares o bolívares.
+Su función: Aquí meteremos el Prompt Masivo (las instrucciones de comportamiento) y la lógica de "Memoria Conversacional".
+¿Por qué esto soluciona tus problemas?
+Contexto Infinito (o casi): Al tener un archivo cerebro.js dedicado, podemos crear una función que gestione el historial de chat de forma mucho más limpia. Podemos hacer que recuerde lo que se dijo hace 10 mensajes sin ensuciar el código de conexión.
+Claridad Mental: Si Greiluz empieza a hablar raro, solo revisamos cerebro.js. Si Greiluz no envía la foto del banco, solo revisamos index.js.
+Discernimiento: En cerebro.js podemos crear funciones específicas de lingüística. Por ejemplo, una función analizarIntencion(texto) que decida antes de responder si el cliente quiere convertir divisa o solo preguntar.
+¿Cómo funcionaría la comunicación entre ellos?
+Es como un piloto y su copiloto:
+Cliente: "Hola, ¿precio?"
+index.js (Cuerpo): Recibe el mensaje. Verifica que no sea spam. Le pasa el texto a cerebro.js.
+cerebro.js (Mente): Analiza el texto + el historial anterior. Decide qué responder usando la IA. Le devuelve a index.js la respuesta y las "órdenes" (ej: [ENVIAR_CATALOGO]).
+index.js (Cuerpo): Recibe la orden, busca el archivo y lo envía.
+Si te gusta esta idea, puedo reestructurar todo el proyecto ahora mismo para separar el código en estos dos archivos. Esto hará que el código sea mucho más largo en total, pero infinitamente más ordenado, potente y fácil de corregir.
+
+
