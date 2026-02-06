@@ -90,5 +90,14 @@ index.js (Cuerpo): Recibe el mensaje. Verifica que no sea spam. Le pasa el texto
 cerebro.js (Mente): Analiza el texto + el historial anterior. Decide qué responder usando la IA. Le devuelve a index.js la respuesta y las "órdenes" (ej: [ENVIAR_CATALOGO]).
 index.js (Cuerpo): Recibe la orden, busca el archivo y lo envía.
 Si te gusta esta idea, puedo reestructurar todo el proyecto ahora mismo para separar el código en estos dos archivos. Esto hará que el código sea mucho más largo en total, pero infinitamente más ordenado, potente y fácil de corregir.
-
+¿Qué hace diferente a la V26?
+Memoria de Elefante (Solución 1):
+Antes: El bot solo veía el mensaje actual. Si preguntabas "¿Cuánto es en Bs?", no sabía de qué hablabas.
+Ahora: El bot lee los últimos 10 mensajes de la conversación. Si hace 2 minutos le pasaste una foto de $50, él lo recuerda y calcula la conversión sin preguntar.
+Aprendizaje y Registro (Solución 2-2):
+Cada vez que se cierra una venta exitosamente, el bot guarda la conversación completa en un archivo aprendizajes/ventas_log.json. Esto te servirá para futura analítica.
+Si el usuario hace una pregunta que genera confusión (el bot no sabe responder), se marca en un log de dudas_nuevas.txt.
+Doble Cerebro Sincronizado:
+index.js: Cuerpo, seguridad, base de datos y "Policía de Requisitos".
+cerebro.js: Mente, contexto, memoria y lógica de ventas.
 
