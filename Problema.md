@@ -213,3 +213,7 @@ Humanización 🎭 Comportamiento Humano: "Escribe" (typing...) durante unos seg
 
 
 25-	Tienes un error en la interpretacion de lo que te dije; y en vez de avanzar estas atrasandote; Reacción a la Dirección: Si el cliente manda la dirección antes de tiempo, el bot la guardará y dirá "Gracias, para completar el pedido necesito X y Y". Sobre eso no me referia a cuendo el cliente va ha comprar; me refiero que aveces los clientes dan una direccion como quiendo decir que si en ese lugar hay, o solo envian una direccion para joder; en ese caso el bot solo debe decirle al cliente el parametro que yo te di sobre las ventas online, que si se le puede hacer el envio a esa direccion comprando online.
+
+
+
+26-  El bot sigue sin darme el precio en Bolivares cuando se lo pido; Ademas el Bot debe ser inteligente y disernidor; por que no puedes colocar una regla estricta que cuando alguien coloque el simbolo $ o diga USD, por que hay clientes que puede decir "Ese es el precio del articulo en divisas?" o "Ese es el precio del articulo en dolares? en un caso asi el bot deberia responder que el precio es correctamente el publicado. Cuando se aplica la conversion de Bolivares a Dolares? Cuando un cliente lo pide explicitamente, por ejemplo "En cuanto me sale este articulo en divisas?" o "En cuanto me sale este articulo pagandolo en dolares?" o cualquiero derivado de esa intencion; ademas los catalogos se siguen repitiendo; el bot solo debe enviar una vez.
